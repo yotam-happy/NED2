@@ -2,7 +2,6 @@ import utils.text
 import json
 from utils.document import *
 import utils.read_dbpedia_ttl as ttl
-import pickle
 import os
 
 class CandidatesHandler:
@@ -144,9 +143,13 @@ class CandidatesUsingYago2:
 
 # Filters disambiguation pages using dbpedia disambiguation page dataset (ttl format)
 class CandidateDisambigPageFilter:
-    def __init__(self, db):
-        self.is_disambig = dict()
-        self.db = db
+    def __init__(self, db, path):
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                self.disambigs = pickle.load(f)
+        else:
+            print "One-time disambiguation pages resolution. This might take some minutes..."
+            self.disambigs = db.getPagesForCategory("Disambiguation_pages")
 
     def filter_candidates(self, candidates):
         cc = set()

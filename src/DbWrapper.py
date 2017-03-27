@@ -27,6 +27,10 @@ class WikipediaDbWrapper:
         self._cache_resolve = dict()
         self._cache_title = dict()
 
+    def getConnection(self, timeout=1):
+        return mysql.connector.connect(user=self._user, password=self._password, host=self._host,
+                                            database=self._database, connection_timeout=timeout)
+
     def resetConnection(self):
         try:
             self._cursor.close()
@@ -62,6 +66,33 @@ class WikipediaDbWrapper:
             if i % 1000000 == 0:
                 self._cnx.commit()
 
+    def getPagesForCategory(self, category_name):
+        query = "select cl_from from categorylinks where cl_to=%s"
+        fetch_cursor = self._cnx.cursor(buffered=True)
+        print 'retrieving pages in category', category_name
+        fetch_cursor.execute(query, (category_name,))
+        pages = {self.resolvePage(int(row[0])) for row in fetch_cursor}
+        return pages
+
+    def getAllCategories(self):
+        # returns a map of id->title
+        query = "select cat_title from category"
+        fetch_cursor = self._cnx.cursor(buffered=True)
+        print 'retrieving all category id2title mappings...'
+        fetch_cursor.execute(query)
+        titles = {str(row[0]) for row in fetch_cursor}
+        cats = dict()
+        for i, title in enumerate(titles):
+            # resolve within category namespace (14)
+            idd = self.resolvePage(title, page_namespace=14)
+            if idd is not None:
+                cats[idd] = title
+            if i % 100 == 0:
+                print 'got', len(cats), 'categories from', i, 'rows'
+
+        print 'got', len(cats), 'categories'
+        return cats
+
     def getCategoryByName(self, category_name):
         query = "SELECT cat_id FROM category " \
                 "WHERE cat_title = %s"
@@ -88,16 +119,17 @@ class WikipediaDbWrapper:
         self._cache_title[page_id] = ret
         return ret
 
-    def resolvePage(self, title, verbose=False, print_errors=False, use_pagelink_table=False):
+    def resolvePage(self, title, verbose=False, print_errors=False, use_pagelink_table=False, page_namespace=0):
         if title in self._cache_resolve:
             return self._cache_resolve[title]
 
         for i in xrange(3):
             try:
                 ret = self._resolvePage(title,
-                                         verbose=verbose,
-                                         print_errors=print_errors,
-                                         use_pagelink_table=use_pagelink_table)
+                                        verbose=verbose,
+                                        print_errors=print_errors,
+                                        use_pagelink_table=use_pagelink_table,
+                                        page_namespace=page_namespace)
                 self._cache_resolve[title] = ret
                 return ret
 
@@ -108,7 +140,7 @@ class WikipediaDbWrapper:
             print "could not resolve due to connection problems"
         return None
 
-    def _resolvePage(self, title, verbose=False, print_errors=True, use_pagelink_table=False):
+    def _resolvePage(self, title, verbose=False, print_errors=True, use_pagelink_table=False, page_namespace=0):
         '''
         Resolving a page id.
         We first use utils.text.strip_wiki_title to compute a cleaned title
@@ -123,19 +155,24 @@ class WikipediaDbWrapper:
         :param use_pagelink_table: if true we try the pagelink table as described above
         :return:                    id of page or None if we couldn't resolve
         '''
-        if verbose:
-            print "resolving title: ", title
 
-        # sometimes the titles come with url type quoting (e.g 'the%20offspring')
-        title = urllib.unquote(title)
-        title = utils.text.strip_wiki_title(title)
-        if verbose:
-            print "lookup key: ", title
+        if isinstance(title, int):
+            if verbose:
+                print "resolving for id: ", title
+            query = "SELECT page_id, page_is_redirect, page_title FROM page " \
+                    "WHERE page_id = %s and page_namespace = %s"
+        else:
+            # sometimes the titles come with url type quoting (e.g 'the%20offspring')
+            title = urllib.unquote(title)
+            title = utils.text.strip_wiki_title(title)
+            if verbose:
+                print "resolving title: ", title
+                print "lookup key: ", title
+            # get page
+            query = "SELECT page_id, page_is_redirect, page_title FROM page " \
+                    "WHERE page_title_for_lookup = %s and page_namespace = %s"
 
-        # get page
-        query = "SELECT page_id, page_is_redirect, page_title FROM page " \
-                "WHERE page_title_for_lookup = %s and page_namespace = 0"
-        self._cursor.execute(query, (title,))
+        self._cursor.execute(query, (title, page_namespace))
         row = self._cursor.fetchone()
         if row is None:
             if verbose or print_errors:
@@ -158,9 +195,9 @@ class WikipediaDbWrapper:
 
             # query next page using redirect table
             query = "SELECT page_id, page_is_redirect, page_title FROM page " \
-                    "WHERE page_namespace = 0 AND page_title IN " \
+                    "WHERE page_namespace = %s AND page_title IN " \
                     "(SELECT rd_title FROM redirect WHERE rd_namespace = 0 AND rd_from = %s)"
-            self._cursor.execute(query, (page_id,))
+            self._cursor.execute(query, (page_namespace, page_id))
             row = self._cursor.fetchone()
 
             if row is None and use_pagelink_table:
@@ -168,9 +205,9 @@ class WikipediaDbWrapper:
                     print "redirect not found in redirect table, trying pagelink..."
                 # try using pagelink (some older redirects can only be found here)
                 query = "SELECT page_id, page_is_redirect, page_title FROM page " \
-                        "WHERE page_namespace = 0 AND page_title IN " \
+                        "WHERE page_namespace = %s AND page_title IN " \
                         "(SELECT pl_title FROM pagelink WHERE pl_namespace = 0 AND pl_from = %s)"
-                self._cursor.execute(query, (page_id,))
+                self._cursor.execute(query, (page_namespace, page_id))
                 row = self._cursor.fetchone()
 
             if row is None:
@@ -195,7 +232,6 @@ class WikipediaDbWrapper:
 
 if __name__ == "__main__":
     wikiDB = WikipediaDbWrapper(user='yotam', password='rockon123', database='wiki20151002')
-    print wikiDB.getCategoryByName("Disambiguation_pages")
-    disambigs = wikiDB.getPagesInCategory(wikiDB.getCategoryByName("Disambiguation_pages"))
+    disambigs = wikiDB.getPagesForCategory("Disambiguation_pages")
     print len(disambigs)
 #    wikiDB.updatePageTableTitleForLookupColumn()

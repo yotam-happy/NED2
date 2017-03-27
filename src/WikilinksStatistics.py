@@ -47,9 +47,6 @@ class WikilinksStatistics:
             if self.entity_transform is not None:
                 self.apply_transform()
 
-        self.conceptCountsSum = sum(self.conceptCounts.values())
-        self._stopwords = stopwords.words('english')
-
     def apply_transform(self):
         """
         Applies entity transform to get mentionLinks and conceptCounts after transform
@@ -58,7 +55,7 @@ class WikilinksStatistics:
         for concept, count in self.conceptCounts.iteritems():
             transformed = self.entity_transform.entity_id_transform(int(concept))
             if transformed is not None:
-                transformedConceptCounts[transformed] = transformedConceptCounts.get(transformed, 0) + count
+                transformedConceptCounts[transformed] = transformedConceptCounts.get(transformed, 0) + int(count)
         self.conceptCounts = transformedConceptCounts
 
         transformedLinks = dict()
@@ -67,7 +64,7 @@ class WikilinksStatistics:
             for concept, count in links.iteritems():
                 transformed = self.entity_transform.entity_id_transform(int(concept))
                 if transformed is not None:
-                    transformedLinks[mention][transformed] = transformedLinks[mention].get(transformed, 0) + count
+                    transformedLinks[mention][transformed] = transformedLinks[mention].get(transformed, 0) + int(count)
         self.mentionLinks = transformedLinks
 
     def getCandidateConditionalPrior(self, concept, mention):
@@ -103,6 +100,7 @@ class WikilinksStatistics:
         f = open(path, mode='r')
         l = f.readlines()
         self.mentionCounts = dict() #json.loads(l[0])
+        self.conceptCounts = {int(a): int(b) for a, b in json.loads(l[2]).iteritems()}
 
         self.mentionLinks = dict()
         for m, ll in json.loads(l[1]).iteritems():
@@ -110,7 +108,6 @@ class WikilinksStatistics:
             for c, cc in ll.iteritems():
                 self.mentionLinks[m][int(c)] = int(cc)
 
-        self.conceptCounts = {int(a): int(b) for a, b in json.loads(l[2]).iteritems()}
         self.conceptCounts2 = dict() #json.loads(l[3])
         self.contextDictionary = json.loads(l[4])
         f.close()
@@ -265,10 +262,10 @@ if __name__ == "__main__":
     from DbWrapper import *
     from DbWrapperCached import *
     wikiDB = WikipediaDbWrapper(user='yotam', password='rockon123', database='wiki20151002')
-#    stats = WikilinksStatistics(WikilinksNewIterator(_path+"/data/wikilinks/filtered/train"))
-#    #stats.calcStatisticsFromDBPedia(_path + '/data/dbpedia/page_links_en.ttl', _path + '/data/dbpedia/en/pairCounts', wikiDB)
-#    stats.calcStatistics()
-#    stats.saveToFile(_path + "/data/wikilinks/filtered-train-stats.final")
     stats = WikilinksStatistics(WikilinksNewIterator(_path+"/data/wikilinks/filtered/train"))
-    stats.loadFromFile(_path+'/data/wikilinks/all-stats')
+#    #stats.calcStatisticsFromDBPedia(_path + '/data/dbpedia/page_links_en.ttl', _path + '/data/dbpedia/en/pairCounts', wikiDB)
+    stats.calcStatistics()
+    stats.saveToFile(_path + "/data/wikilinks/filtered-train-stats.final2")
+#    stats = WikilinksStatistics(WikilinksNewIterator(_path+"/data/wikilinks/filtered/train"))
+#    stats.loadFromFile(_path+'/data/wikilinks/all-stats')
     print "done"

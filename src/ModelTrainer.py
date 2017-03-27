@@ -32,6 +32,17 @@ class ModelTrainer:
         self._n = 0
         self._nn = 0
 
+        # calculate mean number of false candidates per mention
+        tot_false_cand = 0
+        tot_cases = 0
+        for cand_list in self._stats.mentionLinks.itervalues():
+            n_false_cands = len(cand_list) - 1
+            n_cases = sum(cand_list.itervalues())
+            tot_false_cand += n_false_cands * n_cases
+            tot_cases += n_cases
+        self.mean_false_cands_per_case = float(tot_false_cand) / tot_cases
+        print 'mean candidates per case', self.mean_false_cands_per_case
+
         # setup all-sense negative-sampling (define cumulative probability function)
         # -- some ppl say that for long lists it is better to have small probs first due to precision issues
         senses = [(int(x), int(y)) for x, y in self._stats.conceptCounts.items()]
@@ -91,9 +102,12 @@ class ModelTrainer:
         if type(self._neg_sample) is not int and self._neg_sample == 'all':
             neg = ids
         else:
-            # get list of negative samples
-            for k in xrange(self._neg_sample):
+            # how many negative samples?
+            neg_samples = self._neg_sample * float(len(ids)) / self.mean_false_cands_per_case
+            neg_samples = int(neg_samples) + (1 if np.random.rand() < neg_samples % 1 else 0)
 
+            # get list of negative samples
+            for k in xrange(neg_samples):
                 # do negative sampling (get a negative sample)
                 if np.random.rand() < self._neg_sample_all_senses_prob:
                     # get negative sample from all possible senses

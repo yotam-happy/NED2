@@ -89,8 +89,11 @@ class Word2vecLoader:
 #            embedding = normalize(embedding)
         return embedding, embd_dict, embd_sz
 
-    def get_random_matrix(self, n_embds, embd_sz):
-        return np.random.uniform(-1 / np.sqrt(embd_sz * 4), 1 / np.sqrt(embd_sz * 4), (n_embds,embd_sz))
+    def get_random_matrix(self, n_embds, embd_sz, first_row_zeroes=False):
+        embd = np.random.uniform(-1 / np.sqrt(embd_sz * 4), 1 / np.sqrt(embd_sz * 4), (n_embds,embd_sz))
+        if first_row_zeroes:
+            embd[0, :] = 0
+        return embd
 
     def _randomEmbedding(self, path, filterSet, int_key = False):
         with open(path) as f:

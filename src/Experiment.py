@@ -1,6 +1,7 @@
 import ProjectSettings
 from Candidates import *
 from DbWrapper import WikipediaDbWrapper
+from WikiCategories import *
 from DbWrapperCached import *
 from ModelTrainer import ModelTrainer
 from PPRforNED import PPRStatistics
@@ -62,6 +63,8 @@ class Experiment:
         print "loading model..."
         if config["type"] == 'deep_model':
             transform = self.entity_transforms[config['entity_transform']] if 'entity_transform' in config else None
+            categories_transform = self.entity_transforms[config['categories_transform']] \
+                if 'categories_transform' in config else None
             return DeepModel(self.path + config['config_path'],
                              w2v=self.w2v,
                              stats=self.stats[config['stats']],
@@ -69,7 +72,8 @@ class Experiment:
                              load_path=self.path + str(config['load_path']) if 'load_path' in config else None,
                              models_as_features=models_as_features,
                              entity_transform=transform,
-                             inplace_transform=config['inplace_transform'] if 'inplace_transform' in config else False)
+                             inplace_transform=config['inplace_transform'] if 'inplace_transform' in config else False,
+                             categories_transform=categories_transform)
         elif config["type"] == 'gbrt':
             return GBRTModel(self.path + config['config_path'],
                              db=self.db,
@@ -100,6 +104,10 @@ class Experiment:
             raise "Config error"
 
     def switch_entity_transform(self, config):
+        if config['type'] == 'categories':
+            cats = WikiCategories(config['embd_sz'])
+            cats.load(self.path + config['path'])
+            return cats
         if config['type'] == 'EntityToTypeByDbPediaLhdDataset':
             return EntityToTypeByDbPediaLhdDataset(self.path + config['ttl_path'], self.db, int(config['embd_sz']))
 
@@ -124,8 +132,8 @@ class Experiment:
             return db
         else:
             return WikipediaDbWrapper(user=config['user'],
-                                       password=config['password'],
-                                       database=config['database'])
+                                      password=config['password'],
+                                      database=config['database'])
 
     def switch_iterator(self, config):
         if config['dataset'] == 'conll':
@@ -193,7 +201,7 @@ class Experiment:
         evaluation.evaluate()
 
 if __name__ == "__main__":
-    experiment = Experiment("/experiments/zz_wikilinks_deep_entities/experiment.conf")
+    experiment = Experiment("/experiments/zz_wikilinks_deep_categories/experiment.conf")
     for x in xrange(8):
         trained_mentions = experiment.train(model_name='.'+str(x))
         experiment.evaluate()

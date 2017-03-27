@@ -43,10 +43,11 @@ def to_prob(input):
     return input / sum
 
 class ModelBuilder:
-    def __init__(self, config_json, w2v, entity_transform):
+    def __init__(self, config_json, w2v, entity_transform, categories_transform):
         self._config = config_json
         self._w2v = w2v
         self.entity_transform = entity_transform
+        self.categories_transform = categories_transform
 
         self.word_embed_layer = Embedding(self._w2v.wordEmbeddings.shape[0],
                                           self._w2v.wordEmbeddingsSz,
@@ -73,6 +74,17 @@ class ModelBuilder:
                                                   dropout=self._config['w2v_dropout']
                                                   if 'w2v_dropout' in self._config else 0)
 
+        if categories_transform is not None:
+            self.categories_embd_layer = Embedding(categories_transform.get_number_of_values(),
+                                                   categories_transform.get_embd_sz(),
+                                                   input_length=1,
+                                                   weights=[self._w2v.get_random_matrix(categories_transform.get_number_of_values(),
+                                                                                        categories_transform.get_embd_sz(),
+                                                                                        first_row_zeroes=True)],
+                                                   trainable=self._config['finetune_embd'],
+                                                   dropout=self._config['w2v_dropout']
+                                                   if 'w2v_dropout' in self._config else 0)
+
         self.inputs = []
         self.to_join = []
         self.attn = []
@@ -89,6 +101,16 @@ class ModelBuilder:
         if to_join:
             self.to_join.append(candidate_flat)
         return candidate_flat
+
+    def addCategoriesInput(self, max_categories, to_join=True):
+        categories_input = Input(shape=(max_categories,), dtype='int32', name='categories_input')
+        categories_embed = self.categories_embd_layer(categories_input)
+
+        embed_mean = Lambda(nonzero_mean, output_shape=(self.categories_transform.get_embd_sz(),))(categories_embed)
+        self.inputs.append(categories_input)
+        if to_join:
+            self.to_join.append(embed_mean)
+        return embed_mean
 
     def buildAttention(self, seq, controller):
         controller_repeated = RepeatVector(self._config['context_window_size'])(controller)
@@ -143,7 +165,8 @@ class ModelBuilder:
 
 class DeepModel:
     def __init__(self, config, load_path=None, w2v=None, db=None,
-                 stats=None, models_as_features=None, entity_transform=None, inplace_transform=False):
+                 stats=None, models_as_features=None, entity_transform=None, inplace_transform=False,
+                 categories_transform=None):
         '''
         Creates a new NN model configured by a json.
 
@@ -176,9 +199,12 @@ class DeepModel:
 
         self.entity_transform = entity_transform
         self.inplace_transform = inplace_transform
+        self.categories_transform = categories_transform
+        self.max_categories = self._config['max_categories'] if 'max_categories' in self._config else None
         self._db = db
         self._batch_left_X = []
         self._batch_right_X = []
+        self._batch_categories_X = []
         self._batch_candidate_X = []
         self._batch_mention_X = []
         self._batchY = []
@@ -201,16 +227,17 @@ class DeepModel:
         self._word_dict = w2v.wordDict
         self._concept_dict = w2v.conceptDict
 
-        model_builder = ModelBuilder(self._config, w2v, self.entity_transform)
+        model_builder = ModelBuilder(self._config, w2v, self.entity_transform, self.categories_transform)
 
-        # use candidate input if they were specifically specified, or if we are using an attention network to process
-        # the context.
-        if 'candidates' in self.inputs or \
-                ('context' in self.inputs and self._config['context_network'] == 'attention'):
-            candidate = model_builder.addCandidateInput('candidate_input', to_join='candidates' in self.inputs)
+        attn_controller = None
+        if 'candidates' in self.inputs:
+            attn_controller = model_builder.addCandidateInput('candidate_input', to_join='candidates' in self.inputs)
+
+        if 'categories' in self.inputs:
+            attn_controller = model_builder.addCategoriesInput(max_categories=self.max_categories)
 
         if 'context' in self.inputs:
-            model_builder.addContextInput(controller=candidate)
+            model_builder.addContextInput(controller=attn_controller)
 
         if 'mention' in self.inputs:
             model_builder.addMentionInput()
@@ -249,6 +276,7 @@ class DeepModel:
             return None
 
         candidate_X = None
+        categories_X = None
         left_context_X = None
         right_context_X = None
         mention_X = None
@@ -270,7 +298,14 @@ class DeepModel:
             mention_X = self.wordIteratorToIndices(mention.mention_text_tokenized(),
                                                    self._config['max_mention_words'])
 
-        return left_context_X, right_context_X, mention_X, candidate_X
+        if 'categories' in self.inputs:
+            categories_X = [x for x in self.categories_transform.get_categories(candidate)]
+            if len(categories_X) > self.max_categories:
+                categories_X = categories_X[:self.max_categories]
+            while len(categories_X) < self.max_categories:
+                categories_X.append(self.categories_transform.get_empty_id())
+
+        return left_context_X, right_context_X, mention_X, candidate_X, categories_X
 
     def getSpecialToken(self, token):
         if len(token) == 1 and token in PUNK_MARK_CONV:
@@ -332,15 +367,16 @@ class DeepModel:
         if not isinstance(vecs, tuple):
             return # nothing to train on
 
-        (left_X, right_X, mention_X, candidate_X) = vecs
+        (left_X, right_X, mention_X, candidate_X, categories_X) = vecs
         Y = np.array([1, 0] if candidate == correct else [0, 1])
-        self._trainXY(left_X, right_X, mention_X, candidate_X, Y)
+        self._trainXY(left_X, right_X, mention_X, candidate_X, categories_X, Y)
 
-    def _trainXY(self, left_X, right_X, mention_X, candidate_X, Y):
+    def _trainXY(self, left_X, right_X, mention_X, candidate_X, categories_X, Y):
         self._batch_left_X.append(left_X)
         self._batch_right_X.append(right_X)
         self._batch_mention_X.append(mention_X)
         self._batch_candidate_X.append(candidate_X)
+        self._batch_categories_X.append(categories_X)
         self._batchY.append(Y)
 
         if len(self._batchY) >= self._batch_size:
@@ -352,6 +388,8 @@ class DeepModel:
                 batchX['right_context_input'] = np.array(self._batch_right_X)
             if 'mention' in self.inputs:
                 batchX['mention_input'] = np.array(self._batch_mention_X)
+            if 'categories' in self.inputs:
+                batchX['categories_input'] = np.array(self._batch_categories_X)
             batchY = np.array(self._batchY)
 
             loss = self.model.train_on_batch(batchX, batchY)
@@ -362,6 +400,7 @@ class DeepModel:
             self._batch_right_X = []
             self._batch_mention_X = []
             self._batch_candidate_X = []
+            self._batch_categories_X = []
             self._batchY = []
 
     def plotTrainLoss(self, fname, st=0):
@@ -399,7 +438,7 @@ class DeepModel:
         vecs = self._2vec(mention, candidate)
         if not isinstance(vecs, tuple):
             return vecs
-        (left_X, right_X, mention_X, candidate_X) = vecs
+        (left_X, right_X, mention_X, candidate_X, categories_X) = vecs
 
         X = {}
         if 'candidates' in self.inputs:
@@ -409,6 +448,8 @@ class DeepModel:
             X['right_context_input'] = right_X.reshape((1, right_X.shape[0],))
         if 'mention' in self.inputs:
             X['mention_input'] = mention_X.reshape((1, mention_X.shape[0],))
+        if 'categories' in self.inputs:
+            X['categories_input'] = categories_X.reshape((1, categories_X.shape[0],))
 
         Y = self.model.predict(X, batch_size=1)
 #        print self.entity_transform.id2string(candidate_X[0]), ': ', Y[0][0]
@@ -418,7 +459,7 @@ class DeepModel:
         vecs = self._2vec(mention, candidate)
         if not isinstance(vecs, tuple):
             return None
-        (left_X, right_X, mention_X, candidate_X) = vecs
+        (left_X, right_X, mention_X, candidate_X, categories_X) = vecs
 
         X = {}
         if 'candidates' in self.inputs:
@@ -428,6 +469,8 @@ class DeepModel:
             X['right_context_input'] = right_X.reshape((1, right_X.shape[0],))
         if 'mention' in self.inputs:
             X['mention_input'] = mention_X.reshape((1, mention_X.shape[0],))
+        if 'categories' in self.inputs:
+            X['categories_input'] = categories_X.reshape((1, categories_X.shape[0],))
 
         attn_out = self.get_attn_model.predict(X, batch_size=1)
 
