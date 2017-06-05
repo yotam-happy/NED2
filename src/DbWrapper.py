@@ -164,13 +164,13 @@ class WikipediaDbWrapper:
         else:
             # sometimes the titles come with url type quoting (e.g 'the%20offspring')
             title = urllib.unquote(title)
-            title = utils.text.strip_wiki_title(title)
+            title = utils.text.normalize_unicode(title, lower=False)
             if verbose:
                 print "resolving title: ", title
                 print "lookup key: ", title
             # get page
             query = "SELECT page_id, page_is_redirect, page_title FROM page " \
-                    "WHERE page_title_for_lookup = %s and page_namespace = %s"
+                    "WHERE page_title = %s and page_namespace = %s"
 
         self._cursor.execute(query, (title, page_namespace))
         row = self._cursor.fetchone()
@@ -232,6 +232,5 @@ class WikipediaDbWrapper:
 
 if __name__ == "__main__":
     wikiDB = WikipediaDbWrapper(user='yotam', password='rockon123', database='wiki20151002')
-    disambigs = wikiDB.getPagesForCategory("Disambiguation_pages")
-    print len(disambigs)
+    print wikiDB.resolvePage('March_3', verbose=True)
 #    wikiDB.updatePageTableTitleForLookupColumn()

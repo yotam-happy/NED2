@@ -129,13 +129,13 @@ class WikilinksNewIterator:
                         if url.find('#') > -1:
                             url = url[:url.find('#')]
                         wikiId = self._db.resolvePage(url)
+                        if t % 50000 == 0:
+                            print "% able to resolve:", 100 * float(r) / t, "% out of", t
                         if wikiId is None:
                             continue
                         else:
                             wlink['wikiId'] = wikiId
                             r += 1
-                        if t % 100000 == 0:
-                            print "% able to resolve:", 100 * float(r) / t, "% out of", t
 
                     if 'mention_as_list' not in wlink:
                         mention_as_list = unicodedata.normalize('NFKD', wlink['word']).encode('ascii','ignore').lower()

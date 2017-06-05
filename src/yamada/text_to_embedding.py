@@ -8,11 +8,12 @@ import codecs
 class YamadaEmbedder:
     def __init__(self, path, id2title_path, db=None):
         self.id2title = dict()
-        with codecs.open(id2title_path, 'r', 'utf-8') as f:
-            for line in iter(f):
-                l = line.split('\t')
-                self.id2title[int(l[0])] = l[1]
-        print 'title convertion table for yamada:', len(self.id2title)
+        if id2title_path is not None:
+            with codecs.open(id2title_path, 'r', 'utf-8') as f:
+                for line in iter(f):
+                    l = line.split('\t')
+                    self.id2title[int(l[0])] = l[1]
+            print 'title convertion table for yamada:', len(self.id2title)
         self.parser = OpenNLP()
         self.entvec = EntityVector.load(path)
         self._cache = dict()

@@ -13,6 +13,7 @@ from WikilinksIterator import *
 from Evaluation import *
 from models.DeepModel import *
 from EntityTransform import *
+from readers.ace05_reader import *
 
 class Experiment:
     def __init__(self, config, load_path=None):
@@ -52,7 +53,7 @@ class Experiment:
         if hasattr(self.model, '_feature_generator') \
                 and hasattr(self.model._feature_generator, 'yamada_txt_to_embd') \
                 and self.model._feature_generator.yamada_txt_to_embd is not None:
-            self.candidator._filter = self.model._feature_generator.yamada_txt_to_embd
+            self.candidator.candidate_source._filter = self.model._feature_generator.yamada_txt_to_embd
 
     def switch_model(self, config):
         models_as_features = dict()
@@ -93,6 +94,8 @@ class Experiment:
             w2v.randomEmbeddings(conceptDict=concept_filter)
         else:
             w2v.loadEmbeddings(conceptDict=concept_filter)
+        if 'category_path' in config:
+            w2v.loadCategoryEmbeddings(self.path + config['category_path'])
         return w2v
 
     def switch_concept_filter(self, config):
@@ -138,6 +141,8 @@ class Experiment:
     def switch_iterator(self, config):
         if config['dataset'] == 'conll':
             return CoNLLIterator(self.path + '/data/CoNLL/CoNLL_AIDA-YAGO2-dataset.tsv', self.db, split=config['split'])
+        elif config['dataset'] == 'ace':
+            return Ace05Iterator(self.path + '/data/ace05', self.db, split=config['split'])
         elif config['dataset'] == 'from_json':
             return WikilinksNewIterator(self.path + config['path'])
         else:
@@ -201,7 +206,7 @@ class Experiment:
         evaluation.evaluate()
 
 if __name__ == "__main__":
-    experiment = Experiment("/experiments/zz_wikilinks_deep_categories/experiment.conf")
+    experiment = Experiment("/experiments/zz_wikilinks_deep_with_cats_and_entity/experiment.conf")
     for x in xrange(8):
         trained_mentions = experiment.train(model_name='.'+str(x))
         experiment.evaluate()

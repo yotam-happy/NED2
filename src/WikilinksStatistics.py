@@ -189,7 +189,7 @@ class WikilinksStatistics:
         mention_text = utils.text.normalize_unicode(
             mention.mention_text() if hasattr(mention, 'mention_text') else mention)
         if mention_text not in self.mentionLinks:
-            return {}
+            return set()
         candidates = self.mentionLinks[mention_text]
         tot = sum([y for x, y in candidates.iteritems()])
         out = dict()
@@ -262,10 +262,10 @@ if __name__ == "__main__":
     from DbWrapper import *
     from DbWrapperCached import *
     wikiDB = WikipediaDbWrapper(user='yotam', password='rockon123', database='wiki20151002')
-    stats = WikilinksStatistics(WikilinksNewIterator(_path+"/data/wikilinks/filtered/train"))
+    stats = WikilinksStatistics(WikilinksNewIterator(_path+"/data/intralinks/conll_filter"))
 #    #stats.calcStatisticsFromDBPedia(_path + '/data/dbpedia/page_links_en.ttl', _path + '/data/dbpedia/en/pairCounts', wikiDB)
     stats.calcStatistics()
-    stats.saveToFile(_path + "/data/wikilinks/filtered-train-stats.final2")
+    stats.saveToFile(_path + "/data/intralinks/conll_filter_stats")
 #    stats = WikilinksStatistics(WikilinksNewIterator(_path+"/data/wikilinks/filtered/train"))
 #    stats.loadFromFile(_path+'/data/wikilinks/all-stats')
     print "done"

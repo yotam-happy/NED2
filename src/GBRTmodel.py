@@ -30,8 +30,8 @@ class GBRTModel:
             FeatureGenerator(feature_names=self._config['features']['feature_names'],
                              yamada_embedding_path=ProjectSettings.getPath()[0] +
                                                    self._config['features']['yamada_embedding_path'],
-                             yamada_id2title_path=ProjectSettings.getPath()[0] +
-                                                   self._config['features']['yamada_title2id_path'],
+#                             yamada_id2title_path=ProjectSettings.getPath()[0] +
+#                                                   self._config['features']['yamada_title2id_path'],
                              stats=stats,
                              db=db,
                              models_as_features=self.models_as_features,
@@ -43,15 +43,20 @@ class GBRTModel:
     def getPredictor(self):
         return PointwisePredict(self)
 
-    def predict(self, mention, candidate1):
-        # create feature_vec from mention and candidate and predic prob for pointwise predictor
-        feature_vec = self._feature_generator.getFeatureVector(mention, candidate1)
-        Y = self._model.predict_proba(np.asarray(feature_vec).reshape(1, -1))
-        with open('feature_set.txt', 'a') as f:
-            f.write('     -> ' + str(Y[0][1]) + '\n')
-        return Y[0][1]
+    def predict(self, mention, candidates):
+        max_score = -1
+        max_entity = None
+        ret = dict()
+        for candidate in candidates:
+            # create feature_vec from mention and candidate and predic prob for pointwise predictor
+            feature_vec = self._feature_generator.getFeatureVector(mention, candidate)
+            Y = self._model.predict_proba(np.asarray(feature_vec).reshape(1, -1))
+            with open('feature_set.txt', 'a') as f:
+                f.write('     -> ' + str(Y[0][1]) + '\n')
+            ret[candidate] = Y[0][1]
+        return ret
 
-    def train(self, mention, candidate1, correct):
+    def train(self, mention, candidate, is_correct):
         '''
         Gathers mention and candidate features into a dataFrame
         :param mention:
@@ -60,8 +65,11 @@ class GBRTModel:
         :param correct:
         :return: only builds the _train_df
         '''
-        self._train_X.append(self._feature_generator.getFeatureVector(mention, candidate1))
-        self._train_Y.append(1.0 if correct == candidate1 else 0.0)
+        self._train_X.append(self._feature_generator.getFeatureVector(mention, candidate))
+        self._train_Y.append(1 if is_correct else 0)
+
+    def is_trainable(self, candidate):
+        return True
 
     def finalize(self):
         '''
@@ -72,10 +80,12 @@ class GBRTModel:
         trainX = np.array(self._train_X)
         trainy = np.array(self._train_Y)
         print "fitting gbrt model (", len(self._train_Y), "samples)"
-        self._model.fit(trainX, trainy)
+        self._model.fit(trainX, trainy.reshape(trainy.shape[0],))
 
     def saveModel(self, fname):
         pickle.dump(self._model, open(fname + ".gbrtmodel", "wb"))
 
     def loadModel(self, fname):
         self._model = pickle.load(open(fname + ".gbrtmodel", "rb"))
+
+

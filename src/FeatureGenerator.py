@@ -23,6 +23,7 @@ class FeatureGenerator:
 
         if 'yamada_context_similarity' in self.feature_names:
             self._opennlp = OpenNLP()
+            print 'loading yamada embds'
             self.yamada_txt_to_embd = YamadaEmbedder(yamada_embedding_path, yamada_id2title_path, db=db) if yamada_embedding_path is not None else None
 
     def getPointwiseFeatureList(self):

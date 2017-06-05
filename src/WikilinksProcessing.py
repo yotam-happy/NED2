@@ -191,58 +191,61 @@ def offendingUrls(src_path, text_filter):
 
 
 if __name__ == "__main__":
+    input_folder = '/home/yotam/pythonWorkspace/deepProject/data/wikilinks/unprocessed'
+    base_output_folder = '/home/yotam/pythonWorkspace/deepProject/data/wikilinks/wikilinks_strict_match'
     # Resolving ids
-#    wikiDB = WikipediaDbWrapper(user='yotam', password='rockon123', database='wiki20151002')
-#    iter = WikilinksNewIterator(path="../../data/wikilinks/unprocessed", resolveIds=True, db=wikiDB)
-#    writer = wlink_writer('../../data/wikilinks/with-ids')
-#    for i, wlink in enumerate(iter.wikilinks()):
-#        writer.save(wlink)
-#        if i % 10000 == 0:
-#            print "resolve ids: ", i
-#    writer.finalize()
+    print 'resolving ids...'
+    os.makedirs(os.path.join(base_output_folder, 'with-ids'))
+    wikiDB = WikipediaDbWrapper(user='yotam', password='rockon123', database='wiki20151002')
+    it = WikilinksNewIterator(path=input_folder, resolveIds=True, db=wikiDB)
+    writer = wlink_writer(os.path.join(base_output_folder, 'with-ids'))
+    hashes = set()
+    k = 0
+    for i, wlink in enumerate(it.jsons()):
+        # compute hash
+        #as_str = wlink['left_context_text'] + wlink['word'] + wlink['right_context_text']
+        #h = hash(as_str)
+        #if h not in hashes:
+        writer.save(wlink)
+        #    k += 1
+        #    hashes.add(h)
 
-    ## shuffle the dataset
-#    random.seed()
-#    shuffler = ShuffleFiles('../../data/wikilinks/with-ids', '../../data/wikilinks/randomized')
-#    shuffler.work1()
-#    shuffler.work2()
-
-    ## split into train/validation/test (split by urls. All mentions from same url go to same folder)
-#    iter = WikilinksNewIterator('../../data/wikilinks/randomized')
-#    splitWikis(iter, '../../data/wikilinks/all-split')
-
-    ## calculate statistics for ttrain
-    #iter = WikilinksNewIterator('../data/intralinks/all')
-    #stats = WikilinksStatistics(iter)
-    #stats.calcStatistics()
-    #stats.saveToFile('../data/intralinks/train-stats-new')
-    #stats.printSomeStats()
-
-    s = WikilinksStatistics(None, load_from_file_path='../../data/wikilinks/filtered-train-stats')
-    print len(s.mentionLinks)
+        if i % 10000 == 0 and i > 0:
+            print "resolve ids: ", i, '(', float(i - k) / i, 'dups)'
+    writer.finalize()
+    ## calculate statistics
+    print 'calc statistics for all dataset...'
+    it = WikilinksNewIterator(os.path.join(base_output_folder, 'with-ids'))
+    stats = WikilinksStatistics(it)
+    stats.calcStatistics()
+    stats.saveToFile(os.path.join(base_output_folder, 'all-stats'))
+    stats.printSomeStats()
 
     # filter sets
-#    stats = WikilinksStatistics(None, load_from_file_path='../data/wikilinks/all-stats')
-#    good = stats.getGoodMentionsToDisambiguate(p=0.9, t=10)
-#    good = {x for x in good if random.random() <= 0.1}
-#    copyWithFilter("../data/wikilinks/all-split/train", '../data/wikilinks/filtered_small/train', good)
-#    copyWithFilter("../data/wikilinks/all-split/test", '../data/wikilinks/filtered_small/test', good)
-#    copyWithFilter("../data/wikilinks/all-split/validation", '../data/wikilinks/filtered_small/validation', good)
+    print 'filter only interesting mentions...'
+    stats = WikilinksStatistics(None, load_from_file_path=os.path.join(base_output_folder, 'all-stats'))
+    good = stats.getGoodMentionsToDisambiguate(p=0.9, t=20)
+    os.makedirs(os.path.join(base_output_folder, 'filtered'))
+    copyWithFilter(os.path.join(base_output_folder, 'with-ids'), os.path.join(base_output_folder, 'filtered'), good)
 
-    # filter dups in test, eval
-#    print "reading test set"
-#    train_samples = get_dataset_samples_text('../../data/wikilinks/filtered/train')
-#    print "find offending urls"
-#    urls = offendingUrls('../../data/wikilinks/filtered/test', train_samples)
-#    print "filtering"
-#    copyWithTextFilter('../../data/wikilinks/filtered/test', '../../data/wikilinks/filtered_final/test', urls)
+    ## shuffle the dataset
+    print 'shuffling...'
+    random.seed()
+    os.makedirs(os.path.join(base_output_folder, 'randomized'))
+    shuffler = ShuffleFiles(os.path.join(base_output_folder, 'filtered'), os.path.join(base_output_folder, 'randomized'))
+    shuffler.work1()
+    shuffler.work2()
 
+    ## split into train/validation/test (split by urls. All mentions from same url go to same folder)
+    print 'split into train/test/validation...'
+    it = WikilinksNewIterator(os.path.join(base_output_folder, 'randomized'))
+    os.makedirs(os.path.join(base_output_folder, 'split'))
+    splitWikis(it, os.path.join(base_output_folder, 'split'))
 
-    #fix
-#    iter = WikilinksNewIterator(path="../data/intralinks/all")
-#    writer = wlink_writer('../data/intralinks/fixed')
-#    for i, wlink in enumerate(iter.wikilinks()):
-#       writer.save(wlink)
-#       if i % 10000 == 0:
-#           print "resolve ids: ", i
-#    writer.finalize()
+    ## calculate statistics for train
+    print 'calculate train statistics'
+    it = WikilinksNewIterator(os.path.join(base_output_folder, 'split/train'))
+    stats = WikilinksStatistics(it)
+    stats.calcStatistics()
+    stats.saveToFile(os.path.join(base_output_folder, 'train-stats'))
+    stats.printSomeStats()

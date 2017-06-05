@@ -92,38 +92,34 @@ class ModelTrainer:
             print "subsampled", float(self._nn) / self._n
 
         candidates = mention.candidates
-        if actual not in candidates:
+        if actual not in candidates or not self._model.is_trainable(actual):
             return
 
         # get id vector
-        ids = [candidate for candidate in candidates if int(candidate) != actual]
+        ids = [candidate for candidate in candidates
+               if int(candidate) != actual and self._model.is_trainable(candidate)]
 
         neg = []
         if type(self._neg_sample) is not int and self._neg_sample == 'all':
             neg = ids
         else:
-            # how many negative samples?
-            neg_samples = self._neg_sample * float(len(ids)) / self.mean_false_cands_per_case
-            neg_samples = int(neg_samples) + (1 if np.random.rand() < neg_samples % 1 else 0)
-
             # get list of negative samples
-            for k in xrange(neg_samples):
+            for k in xrange(self._neg_sample):
                 # do negative sampling (get a negative sample)
                 if np.random.rand() < self._neg_sample_all_senses_prob:
                     # get negative sample from all possible senses
-                    wrong = self.getSenseNegSample()
+                    neg.append(self.getSenseNegSample())
                 else:
                     # get negative sample from senses seen for the current mention
                     if len(ids) < 1:
                         continue
-                    wrong = ids[np.random.randint(len(ids))]
-                neg.append(wrong)
+                    neg.append(ids[np.random.randint(len(ids))])
 
         # train
+        self._model.train(mention, actual, True)
         if len(neg) > 0:
-            self._model.train(mention, actual, actual)
             for wrong in neg:
-                self._model.train(mention, wrong, actual)
+                self._model.train(mention, wrong, False)
 
     def train(self):
         print "start training..."
@@ -139,15 +135,16 @@ class ModelTrainer:
                         continue
                     self.train_on_mention(mention)
                     k += 1
-                    if k % 128 == 0:
-                        print "trained on", k, "examples"
+                    if k % 500 == 0:
+#                        print "trained on", k
+                        for_batches = 100 if len(self._model.train_loss) > 100 else len(self._model.train_loss)
+                        print "trained on", k, "examples. avg. loss:", np.mean(self._model.train_loss[-for_batches:])
             print "epoch had", k, "mentions"
             end_t = timer()
             print "overall took - ", (end_t - start_t) / 60.0, " minutes for ", k, " mentions"
 
             if hasattr(self._model, "train_loss"):
                 loss = sum(self._model.train_loss) / float(len(self._model.train_loss))
-                self._model.train_loss = []
                 print "avg. loss for epoch:", loss
         self._model.finalize()
         print "done training."

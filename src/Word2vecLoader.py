@@ -3,6 +3,7 @@ from sklearn.preprocessing import normalize
 from scipy import spatial
 import numpy as np
 import os
+import sys
 
 from WikilinksIterator import WikilinksNewIterator
 from WikilinksStatistics import WikilinksStatistics
@@ -34,6 +35,9 @@ class Word2vecLoader:
         self.conceptEmbeddings = None
         self.conceptDict = dict()
         self.conceptEmbeddingsSz = 0
+        self.categoryEmbeddings = None
+        self.page_categories = dict()
+        self.categoryEmbeddingsSz = 0
 
     def similarity(self, v1, v2):
         return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
@@ -57,6 +61,15 @@ class Word2vecLoader:
         return vecs.mean(0)
 
     def _loadEmbedding(self, path, filterSet, int_key=False, add_special_marks=False):
+        temp_file = path + '.temp' + ('' if filterSet is None else str(len(filterSet)))
+        print temp_file
+        if os.path.exists(temp_file):
+            embedding = np.load(temp_file + '.npy')
+            with open(temp_file, 'r') as f:
+                embd_dict = pickle.load(f)
+                embd_sz = pickle.load(f)
+            return embedding, embd_dict, embd_sz
+
         if filterSet is not None:
             print "filterSet", len(filterSet)
         with open(path) as f:
@@ -66,6 +79,7 @@ class Word2vecLoader:
 
             embd_dict = dict()
             n_special = 2 + len(SPECIAL_MARKS) if add_special_marks else 2
+            embedding = None
             embedding = np.zeros((dict_sz + n_special, embd_sz))
 
             # Adds a dummy key. The dummy is a (0,...,0) vector
@@ -86,7 +100,14 @@ class Word2vecLoader:
                     embedding[i, :] = np.array([float(x) for x in s[1:]])
                     embd_dict[key] = i
                     i += 1
-#            embedding = normalize(embedding)
+            embedding = normalize(embedding)
+
+        if not os.path.exists(temp_file):
+            np.save(temp_file + '.npy', embedding)
+            with open(temp_file, 'w+') as f:
+                pickle.dump(embd_dict, f)
+                pickle.dump(embd_sz, f)
+
         return embedding, embd_dict, embd_sz
 
     def get_random_matrix(self, n_embds, embd_sz, first_row_zeroes=False):
@@ -126,6 +147,10 @@ class Word2vecLoader:
         self.conceptEmbeddings, self.conceptDict, self.conceptEmbeddingsSz = \
             self._randomEmbedding(self._conceptsFilePath, conceptDict, int_key=True)
 
+    def loadCategoryEmbeddings(self, categoryFilePath):
+        print "loading category embeddings..."
+        self.categoryEmbeddings, self.page_categories, self.categoryEmbeddingsSz = \
+            self._loadEmbedding(categoryFilePath, None)
 
     def loadEmbeddings(self, wordDict=None, conceptDict=None):
         """

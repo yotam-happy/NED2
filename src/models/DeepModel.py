@@ -1,15 +1,13 @@
 from keras.models import Model
 from keras.models import model_from_json
-from keras.layers import *
-import matplotlib.pyplot as plt
 from nltk.corpus import stopwords
 import keras.backend as K
 import json
 from Word2vecLoader import DUMMY_KEY
-import tensorflow as tf
-import keras
-import keras.objectives
+import keras.layers as layers
+import keras.optimizers as optimizers
 from PointwisePredict import *
+import tensorflow as tf
 
 PUNK_MARK_CONV = {'!': '@!@',
                   '"': '@"@', "'": '@"@',
@@ -22,8 +20,16 @@ PUNK_MARK_CONV = {'!': '@!@',
                   ';': '@;@',
                   '?': '@?@'}
 
-# nonzero_mean is mask_aware_mean taken from: https://github.com/fchollet/keras/issues/1579
-def nonzero_mean(x):
+def sum_seq(x):
+    return K.sum(x, axis=1, keepdims=False)
+
+def to_prob(input):
+    sum = K.sum(input, 1, keepdims=True)
+    return input / sum
+
+# mask_aware_mean and ZeroMaskedEntries taken from: https://github.com/fchollet/keras/issues/1579
+
+def mask_aware_mean(x):
     # recreate the masks - all zero rows have been masked
     mask = K.not_equal(K.sum(K.abs(x), axis=2, keepdims=True), 0)
 
@@ -35,12 +41,41 @@ def nonzero_mean(x):
 
     return x_mean
 
-def sum_seq(x):
-    return K.sum(x, axis=1, keepdims=False)
+def max(x):
+    x_max = K.max(x, axis=1, keepdims=False)
+    return x_max
 
-def to_prob(input):
-    sum = K.sum(input, 1, keepdims=True)
-    return input / sum
+class ZeroMaskedEntries(layers.Layer):
+    """
+    This layer is called after an Embedding layer.
+    It zeros out all of the masked-out embeddings.
+    It also swallows the mask without passing it on.
+    You can change this to default pass-on behavior as follows:
+
+    def compute_mask(self, x, mask=None):
+        if not self.mask_zero:
+            return None
+        else:
+            return K.not_equal(x, 0)
+    """
+
+    def __init__(self, **kwargs):
+        self.support_mask = True
+        super(ZeroMaskedEntries, self).__init__(**kwargs)
+
+    def build(self, input_shape):
+        self.output_dim = input_shape[1]
+        self.repeat_dim = input_shape[2]
+
+    def call(self, x, mask=None):
+        mask = K.cast(mask, 'float32')
+        mask = K.repeat(mask, self.repeat_dim)
+        mask = K.permute_dimensions(mask, (0, 2, 1))
+        return x * mask
+
+    def compute_mask(self, input_shape, input_mask=None):
+        return None
+
 
 class ModelBuilder:
     def __init__(self, config_json, w2v, entity_transform, categories_transform):
@@ -48,103 +83,105 @@ class ModelBuilder:
         self._w2v = w2v
         self.entity_transform = entity_transform
         self.categories_transform = categories_transform
+        self.optimizer = None
 
-        self.word_embed_layer = Embedding(self._w2v.wordEmbeddings.shape[0],
-                                          self._w2v.wordEmbeddingsSz,
-                                          input_length=self._config['context_window_size'],
-                                          weights=[self._w2v.wordEmbeddings],
-                                          trainable=self._config['finetune_embd'],
-                                          dropout=self._config['w2v_dropout']
-                                          if 'w2v_dropout' in self._config else 0)
-        if entity_transform is None:
-            self.concept_embed_layer = Embedding(self._w2v.conceptEmbeddings.shape[0],
-                                                 self._w2v.conceptEmbeddingsSz,
-                                                 input_length=1,
-                                                 weights=[self._w2v.conceptEmbeddings],
-                                                 trainable=self._config['finetune_embd'],
-                                                 dropout=self._config['w2v_dropout']
-                                                 if 'w2v_dropout' in self._config else 0)
-        else:
-            self.transform_embd_layer = Embedding(entity_transform.get_number_of_values(),
-                                                  entity_transform.get_embd_sz(),
-                                                  input_length=1,
-                                                  weights=[self._w2v.get_random_matrix(entity_transform.get_number_of_values(),
-                                                                                       entity_transform.get_embd_sz())],
-                                                  trainable=self._config['finetune_embd'],
-                                                  dropout=self._config['w2v_dropout']
-                                                  if 'w2v_dropout' in self._config else 0)
+        with tf.device('/cpu:0'):
+            self.word_embed_layer = layers.Embedding(self._w2v.wordEmbeddings.shape[0],
+                                                     self._w2v.wordEmbeddingsSz,
+                                                     input_length=self._config['context_window_size'],
+                                                     weights=[self._w2v.wordEmbeddings],
+                                                     trainable=self._config['finetune_embd'])
+            if entity_transform is None:
+                self.concept_embed_layer = layers.Embedding(self._w2v.conceptEmbeddings.shape[0],
+                                                            self._w2v.conceptEmbeddingsSz,
+                                                            input_length=1,
+                                                            weights=[self._w2v.conceptEmbeddings],
+                                                            trainable=self._config['finetune_embd'])
+            else:
+                self.transform_embd_layer = layers.Embedding(entity_transform.get_number_of_values(),
+                                                             entity_transform.get_embd_sz(),
+                                                             input_length=1,
+                                                             weights=[self._w2v.get_random_matrix(entity_transform.get_number_of_values(),
+                                                                                                  entity_transform.get_embd_sz())],
+                                                             trainable=self._config['finetune_embd'])
 
-        if categories_transform is not None:
-            self.categories_embd_layer = Embedding(categories_transform.get_number_of_values(),
-                                                   categories_transform.get_embd_sz(),
-                                                   input_length=1,
-                                                   weights=[self._w2v.get_random_matrix(categories_transform.get_number_of_values(),
-                                                                                        categories_transform.get_embd_sz(),
-                                                                                        first_row_zeroes=True)],
-                                                   trainable=self._config['finetune_embd'],
-                                                   dropout=self._config['w2v_dropout']
-                                                   if 'w2v_dropout' in self._config else 0)
+            if categories_transform is not None:
+                self.categories_embd_layer = layers.Embedding(self._w2v.categoryEmbeddings.shape[0],
+                                                              self._w2v.categoryEmbeddingsSz,
+                                                              input_length=1,
+                                                              weights=[self._w2v.categoryEmbeddings],
+                                                              trainable=self._config['finetune_embd'],
+                                                              mask_zero=True)
 
         self.inputs = []
         self.to_join = []
         self.attn = []
 
     def addCandidateInput(self, name, to_join=True):
-        candidate_input = Input(shape=(1,), dtype='int32', name=name)
-        if not self.entity_transform:
-            candidate_embed = self.concept_embed_layer(candidate_input)
-        else:
-            candidate_embed = self.transform_embd_layer(candidate_input)
+        with tf.device('/cpu:0'):
+            candidate_input = layers.Input(shape=(1,), dtype='int32', name=name)
+            if not self.entity_transform:
+                candidate_embed = self.concept_embed_layer(candidate_input)
+            else:
+                candidate_embed = self.transform_embd_layer(candidate_input)
 
-        candidate_flat = Flatten()(candidate_embed)
+            candidate_flat = layers.Flatten()(candidate_embed)
         self.inputs.append(candidate_input)
         if to_join:
             self.to_join.append(candidate_flat)
         return candidate_flat
 
     def addCategoriesInput(self, max_categories, to_join=True):
-        categories_input = Input(shape=(max_categories,), dtype='int32', name='categories_input')
-        categories_embed = self.categories_embd_layer(categories_input)
+        with tf.device('/cpu:0'):
+            categories_input = layers.Input(shape=(max_categories,), dtype='int32', name='categories_input')
+            categories_embed = self.categories_embd_layer(categories_input)
+            embed_zero_masked = ZeroMaskedEntries()(categories_embed)
+            embed_max = layers.Lambda(max,output_shape=(self._w2v.conceptEmbeddingsSz,))(embed_zero_masked)
+        #embed_mean = Lambda(mask_aware_mean)(embed_zero_masked)
+        #embed_out = Concatenate([embed_max, embed_mean])
 
-        embed_mean = Lambda(nonzero_mean, output_shape=(self.categories_transform.get_embd_sz(),))(categories_embed)
         self.inputs.append(categories_input)
         if to_join:
-            self.to_join.append(embed_mean)
-        return embed_mean
+            self.to_join.append(embed_max)
+        return embed_max
 
     def buildAttention(self, seq, controller):
-        controller_repeated = RepeatVector(self._config['context_window_size'])(controller)
-        attention = merge([controller_repeated, seq], mode='concat', concat_axis=-1)
+        controller_repeated = layers.RepeatVector(self._config['context_window_size'])(controller)
+        attention = layers.merge([controller_repeated, seq], mode='concat', concat_axis=-1)
+        #attention = layers.concatenate([controller_repeated, seq], axis=-1)
 
-        attention = TimeDistributed(Dense(1, activation='sigmoid'))(attention)
-        attention = Flatten()(attention)
-        attention = Lambda(to_prob, output_shape=(self._config['context_window_size'],))(attention)
+        #layers.Dense(1, activation='sigmoid')
+        attention = layers.TimeDistributedDense(1, activation='sigmoid')(attention)
+        attention = layers.Flatten()(attention)
+        attention = layers.Lambda(to_prob, output_shape=(self._config['context_window_size'],))(attention)
 
-        attention_repeated = RepeatVector(self._w2v.conceptEmbeddingsSz)(attention)
-        attention_repeated = Permute((2, 1))(attention_repeated)
+        attention_repeated = layers.RepeatVector(self._w2v.conceptEmbeddingsSz)(attention)
+        attention_repeated = layers.Permute((2, 1))(attention_repeated)
 
-        weighted = merge([attention_repeated, seq], mode='mul')
-        summed = Lambda(sum_seq, output_shape=(self._w2v.conceptEmbeddingsSz,))(weighted)
+        weighted = layers.merge([attention_repeated, seq], mode='mul')
+        #weighted = layers.multiply([attention_repeated, seq])
+        summed = layers.Lambda(sum_seq, output_shape=(self._w2v.conceptEmbeddingsSz,))(weighted)
         return summed, attention
 
     def addContextInput(self, controller=None):
-        left_context_input = Input(shape=(self._config['context_window_size'],), dtype='int32', name='left_context_input')
-        right_context_input = Input(shape=(self._config['context_window_size'],), dtype='int32', name='right_context_input')
-        self.inputs += [left_context_input, right_context_input]
-        left_context_embed = self.word_embed_layer(left_context_input)
-        right_context_embed = self.word_embed_layer(right_context_input)
+        with tf.device('/cpu:0'):
+            left_context_input = layers.Input(shape=(self._config['context_window_size'],), dtype='int32', name='left_context_input')
+            right_context_input = layers.Input(shape=(self._config['context_window_size'],), dtype='int32', name='right_context_input')
+            self.inputs += [left_context_input, right_context_input]
+            left_context_embed = self.word_embed_layer(left_context_input)
+            right_context_embed = self.word_embed_layer(right_context_input)
 
         if self._config['context_network'] == 'gru':
-            left_rnn = GRU(self._w2v.wordEmbeddingsSz)(left_context_embed)
-            right_rnn = GRU(self._w2v.wordEmbeddingsSz)(right_context_embed)
+            left_rnn = layers.GRU(self._w2v.wordEmbeddingsSz)(left_context_embed)
+            right_rnn = layers.GRU(self._w2v.wordEmbeddingsSz)(right_context_embed)
             self.to_join += [left_rnn, right_rnn]
         elif self._config['context_network'] == 'mean':
-            left_mean = Lambda(nonzero_mean, output_shape=(self._w2v.conceptEmbeddingsSz,))(left_context_embed)
-            right_mean = Lambda(nonzero_mean, output_shape=(self._w2v.conceptEmbeddingsSz,))(right_context_embed)
+            left_mean = layers.Lambda(mask_aware_mean, output_shape=(self._w2v.conceptEmbeddingsSz,))(left_context_embed)
+            right_mean = layers.Lambda(mask_aware_mean, output_shape=(self._w2v.conceptEmbeddingsSz,))(right_context_embed)
             self.to_join += [left_mean, right_mean]
         elif self._config['context_network'] == 'attention':
-            left_rnn = GRU(self._w2v.wordEmbeddingsSz, return_sequences=True)(left_context_embed)
-            right_rnn = GRU(self._w2v.wordEmbeddingsSz, return_sequences=True)(right_context_embed)
+            left_rnn = layers.GRU(self._w2v.wordEmbeddingsSz, return_sequences=True)(left_context_embed)
+            right_rnn = layers.GRU(self._w2v.wordEmbeddingsSz, return_sequences=True)(right_context_embed)
 
             after_attention_left, attn_values_left = \
                 self.buildAttention(left_rnn, controller)
@@ -156,9 +193,10 @@ class ModelBuilder:
             raise "unknown"
 
     def addMentionInput(self):
-        mention_input = Input(shape=(self._config['max_mention_words'],), dtype='int32', name='mention_input')
-        mention_embed = self.word_embed_layer(mention_input)
-        mention_mean = Lambda(nonzero_mean, output_shape=(self._w2v.conceptEmbeddingsSz,))(mention_embed)
+        with tf.device('/cpu:0'):
+            mention_input = layers.Input(shape=(self._config['max_mention_words'],), dtype='int32', name='mention_input')
+            mention_embed = self.word_embed_layer(mention_input)
+            mention_mean = layers.Lambda(mask_aware_mean, output_shape=(self._w2v.conceptEmbeddingsSz,))(mention_embed)
         self.inputs.append(mention_input)
         self.to_join.append(mention_mean)
 
@@ -208,9 +246,11 @@ class DeepModel:
         self._batch_candidate_X = []
         self._batch_mention_X = []
         self._batchY = []
+        self._last_layer_sz = 0
         self.train_loss = []
         self._batch_size = 128
         self.inputs = {x for x in self._config['inputs']}
+        self._w2v = w2v
 
         self.model = None
         self.get_attn_model = None
@@ -218,12 +258,12 @@ class DeepModel:
         if load_path is None:
             self.compileModel(w2v)
         else:
-            self.loadModel(load_path)
+            self.compileModel(w2v, load_path)
 
     def getPredictor(self):
         return PointwisePredict(self)
 
-    def compileModel(self, w2v):
+    def compileModel(self, w2v, weights_file=None):
         self._word_dict = w2v.wordDict
         self._concept_dict = w2v.conceptDict
 
@@ -231,10 +271,15 @@ class DeepModel:
 
         attn_controller = None
         if 'candidates' in self.inputs:
-            attn_controller = model_builder.addCandidateInput('candidate_input', to_join='candidates' in self.inputs)
+            attn_controller = model_builder.addCandidateInput('candidate1_input', to_join='candidates' in self.inputs)
 
         if 'categories' in self.inputs:
-            attn_controller = model_builder.addCategoriesInput(max_categories=self.max_categories)
+            c = model_builder.addCategoriesInput(max_categories=self.max_categories)
+            if attn_controller == None:
+                attn_controller = c
+            else:
+                attn_controller = layers.merge([attn_controller, c], mode='concat', concat_axis=-1)
+                #attn_controller = layers.concatenate([attn_controller, c])
 
         if 'context' in self.inputs:
             model_builder.addContextInput(controller=attn_controller)
@@ -247,19 +292,32 @@ class DeepModel:
         attn = model_builder.attn
 
         # join all inputs
-        x = merge(to_join, mode='concat') if len(to_join) > 1 else to_join[0]
+        #x = layers.concatenate(to_join) if len(to_join) > 1 else to_join[0]
+        x = layers.merge(to_join, mode='concat') if len(to_join) > 1 else to_join[0]
 
         # build classifier model
         for c in self._config['classifier_layers']:
-            x = Dense(c, activation='relu')(x)
+            x = layers.Dense(c, activation='relu')(x)
         if 'dropout' in self._config:
-            x = Dropout(float(self._config['dropout']))(x)
-        out = Dense(2, activation='softmax', name='main_output')(x)
+            x = layers.Dropout(float(self._config['dropout']))(x)
+        out = layers.Dense(2, activation='softmax', name='main_output')(x)
 
-        self.model = Model(input=inputs, output=[out]) # keras.optimizers.TFOptimizer(tf.train.AdagradOptimizer(0.01))
+        self.model = Model(input=inputs, output=[out])
+        #self.model = Model(inputs=inputs, outputs=[out])
+        if weights_file is not None:
+            self.model.load_weights(weights_file + ".weights")
+#optimizers.TFOptimizer( )
         self.model.compile(optimizer=tf.train.AdagradOptimizer(0.1), loss='binary_crossentropy')
         self.get_attn_model = Model(input=inputs, output=attn)
         print "model compiled!"
+
+    def is_trainable(self, candidate):
+        if candidate is not None and self.inplace_transform:
+            candidate = self.entity_transform.entity_id_transform(candidate)
+
+        if candidate is None or (self.entity_transform is None and candidate not in self._concept_dict):
+            return False
+        return True
 
     def _2vec(self, mention, candidate):
         """
@@ -269,11 +327,12 @@ class DeepModel:
         if cannot produce wikilink vec or vectors for both candidates then returns None
         if cannot produce vector to only one of the candidates then returns the id of the other
         """
+
+        if not self.is_trainable(candidate):
+            return None
+
         if candidate is not None and self.inplace_transform:
             candidate = self.entity_transform.entity_id_transform(candidate)
-
-        if candidate is None or (self.entity_transform is None and candidate not in self._concept_dict):
-            return None
 
         candidate_X = None
         categories_X = None
@@ -299,11 +358,14 @@ class DeepModel:
                                                    self._config['max_mention_words'])
 
         if 'categories' in self.inputs:
-            categories_X = [x for x in self.categories_transform.get_categories(candidate)]
+            categories_X = [c for c in self._w2v.page_categories[candidate]] if candidate in self._w2v.page_categories else []
+            if len(categories_X) == 0:
+                categories_X.append(self._w2v.page_categories['~Empty~'])
             if len(categories_X) > self.max_categories:
                 categories_X = categories_X[:self.max_categories]
             while len(categories_X) < self.max_categories:
-                categories_X.append(self.categories_transform.get_empty_id())
+                categories_X.append(self._w2v.page_categories['~Dummy~'])
+            categories_X = np.array(categories_X)
 
         return left_context_X, right_context_X, mention_X, candidate_X, categories_X
 
@@ -356,19 +418,20 @@ class DeepModel:
                 indices.append(i)
         return words, indices
 
-    def train(self, mention, candidate, correct):
+    def train(self, mention, candidate, is_correct):
         """
         Takes a single example to train
         :param mention:    The mention to train on
         :param candidate:  the candidate entity id
-        :param correct:     which of the two is correct (expected output)
+        :param is_correct:
         """
         vecs = self._2vec(mention, candidate)
         if not isinstance(vecs, tuple):
+            print '!!!'
             return # nothing to train on
 
         (left_X, right_X, mention_X, candidate_X, categories_X) = vecs
-        Y = np.array([1, 0] if candidate == correct else [0, 1])
+        Y = np.array([1, 0] if is_correct else [0, 1])
         self._trainXY(left_X, right_X, mention_X, candidate_X, categories_X, Y)
 
     def _trainXY(self, left_X, right_X, mention_X, candidate_X, categories_X, Y):
@@ -382,7 +445,7 @@ class DeepModel:
         if len(self._batchY) >= self._batch_size:
             batchX = {}
             if 'candidates' in self.inputs:
-                batchX['candidate_input'] = np.array(self._batch_candidate_X)
+                batchX['candidate1_input'] = np.array(self._batch_candidate_X)
             if 'context' in self.inputs:
                 batchX['left_context_input'] = np.array(self._batch_left_X)
                 batchX['right_context_input'] = np.array(self._batch_right_X)
@@ -392,9 +455,17 @@ class DeepModel:
                 batchX['categories_input'] = np.array(self._batch_categories_X)
             batchY = np.array(self._batchY)
 
-            loss = self.model.train_on_batch(batchX, batchY)
+            if 'special' not in self._config:
+                loss = self.model.train_on_batch(batchX, batchY)
+            else:
+                jj = self._last_layer_sz
+                batchYAll = {}
+                while jj > 1:
+                    batchYAll['main_output' + jj] = batchY
+                    jj /= 2
+                loss = self.model.train_on_batch(batchX, batchYAll)
+
             self.train_loss.append(loss)
-            print 'Done batch. Size of batch - ', batchY.shape, '; loss: ', loss
 
             self._batch_left_X = []
             self._batch_right_X = []
@@ -420,11 +491,10 @@ class DeepModel:
         with open(fname+".w2v.def", 'w') as f:
             f.write(json.dumps(self._word_dict)+'\n')
             f.write(json.dumps(self._concept_dict)+'\n')
-        return
 
     def loadModel(self, fname):
         with open(fname+".model", 'r') as model_file:
-            self.model = model_from_json(model_file.read())
+            self.model = model_from_json(model_file.read(), {"ZeroMaskedEntries": ZeroMaskedEntries})
         self.model.load_weights(fname + ".weights")
 
         with open(fname+".w2v.def", 'r') as f:
@@ -434,26 +504,45 @@ class DeepModel:
 
         self.model.compile(optimizer=tf.train.AdagradOptimizer(0.1), loss='binary_crossentropy')
 
-    def predict(self, mention, candidate):
-        vecs = self._2vec(mention, candidate)
-        if not isinstance(vecs, tuple):
-            return vecs
-        (left_X, right_X, mention_X, candidate_X, categories_X) = vecs
+    def predict(self, mention, candidates):
+        _batch_left_X = []
+        _batch_right_X = []
+        _batch_mention_X = []
+        _batch_candidate_X = []
+        _batch_categories_X = []
 
-        X = {}
+        actual_candidates = []
+        for candidate in candidates:
+            vecs = self._2vec(mention, candidate)
+            if not isinstance(vecs, tuple):
+                continue
+            (left_X, right_X, mention_X, candidate_X, categories_X) = vecs
+            _batch_left_X.append(left_X)
+            _batch_right_X.append(right_X)
+            _batch_mention_X.append(mention_X)
+            _batch_candidate_X.append(candidate_X)
+            _batch_categories_X.append(categories_X)
+            actual_candidates.append(candidate)
+
+        if len(actual_candidates) == 0:
+            return None
+
+        batchX = {}
         if 'candidates' in self.inputs:
-            X['candidate_input'] = candidate_X.reshape((1, candidate_X.shape[0],))
+            batchX['candidate1_input'] = np.array(_batch_candidate_X)
         if 'context' in self.inputs:
-            X['left_context_input'] = left_X.reshape((1, left_X.shape[0],))
-            X['right_context_input'] = right_X.reshape((1, right_X.shape[0],))
+            batchX['left_context_input'] = np.array(_batch_left_X)
+            batchX['right_context_input'] = np.array(_batch_right_X)
         if 'mention' in self.inputs:
-            X['mention_input'] = mention_X.reshape((1, mention_X.shape[0],))
+            batchX['mention_input'] = np.array(_batch_mention_X)
         if 'categories' in self.inputs:
-            X['categories_input'] = categories_X.reshape((1, categories_X.shape[0],))
+            batchX['categories_input'] = np.array(_batch_categories_X)
 
-        Y = self.model.predict(X, batch_size=1)
-#        print self.entity_transform.id2string(candidate_X[0]), ': ', Y[0][0]
-        return Y[0][0]
+        batchY = self.model.predict(batchX, batch_size=len(actual_candidates))
+        Y = {}
+        for i, candidate in enumerate(actual_candidates):
+            Y[candidate] = batchY[i][0]
+        return Y
 
     def get_attn(self, mention, candidate):
         vecs = self._2vec(mention, candidate)
